@@ -48,7 +48,8 @@ def fetch_openrouter(acc):
     try:
         d = _http("https://openrouter.ai/api/v1/credits", h)
         balance = d["data"]["total_credits"] - d["data"]["total_usage"]
-        return _result(acc, "OpenRouter", [f"Credit: ${balance:.2f}"], warn=balance < 5)
+        return _result(acc, "OpenRouter", [f"Credit: ${balance:.2f}"],
+                       warn=balance < 5, brief=f"${balance:.0f}")
     except urllib.error.HTTPError as e:
         if e.code != 403:
             raise
@@ -58,12 +59,14 @@ def fetch_openrouter(acc):
     info = d.get("data", {})
     remaining = info.get("limit_remaining")
     if remaining is not None:
-        return _result(acc, "OpenRouter", [f"Credit: ${remaining:.2f}"], warn=remaining < 5)
+        return _result(acc, "OpenRouter", [f"Credit: ${remaining:.2f}"],
+                       warn=remaining < 5, brief=f"${remaining:.0f}")
     limit, usage = info.get("limit"), info.get("usage", 0)
     if limit is not None:
         bal = limit - usage
-        return _result(acc, "OpenRouter", [f"Credit: ${bal:.2f}"], warn=bal < 5)
-    return _result(acc, "OpenRouter", [f"Used: ${usage:.2f}"])
+        return _result(acc, "OpenRouter", [f"Credit: ${bal:.2f}"],
+                       warn=bal < 5, brief=f"${bal:.0f}")
+    return _result(acc, "OpenRouter", [f"Used: ${usage:.2f}"], brief=f"${usage:.0f}")
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +110,13 @@ def _cursor_admin(acc):
     days = _days_until_reset(billing_day)
     lines.append(f"Resets in {days} day{'s' if days != 1 else ''}")
 
-    return _result(acc, "Cursor", lines, warn=ol and total > ol * 0.9)
+    if ol:
+        pct = int(total / ol * 100)
+        brief = f"{pct}%"
+    else:
+        brief = f"${total:,.0f}"
+
+    return _result(acc, "Cursor", lines, warn=ol and total > ol * 0.9, brief=brief)
 
 
 def _cursor_session(acc):
@@ -239,7 +248,13 @@ def fetch_openai(acc):
     days = _days_until_reset(billing_day)
     reset_line = f"Resets in {days} day{'s' if days != 1 else ''}"
 
-    return _result(acc, "OpenAI", [line, reset_line], warn=warn)
+    if budget:
+        pct = int(total_cost / budget * 100)
+        brief = f"{pct}%"
+    else:
+        brief = f"${total_cost:.0f}"
+
+    return _result(acc, "OpenAI", [line, reset_line], warn=warn, brief=brief)
 
 
 # ---------------------------------------------------------------------------
@@ -270,12 +285,13 @@ PROVIDERS = {
 }
 
 
-def _result(acc, default_name, lines, warn=False, error=False):
+def _result(acc, default_name, lines, warn=False, error=False, brief=None):
     return {
         "name": acc.get("name", default_name),
         "lines": lines,
         "warn": bool(warn),
         "error": bool(error),
+        "brief": brief,
     }
 
 
@@ -338,8 +354,11 @@ def run(force=False):
         tip += [f"  {e}" for e in errors]
         has_warn = True
 
+    briefs = [r["brief"] for r in results if r.get("brief")]
+    bar_text = "󰊤 " + " · ".join(briefs) if briefs else "󰊤"
+
     output = {
-        "text": "󰊤",
+        "text": bar_text,
         "tooltip": "\n".join(tip),
         "class": "warning" if has_warn else "normal",
     }
