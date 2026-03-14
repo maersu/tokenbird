@@ -1,0 +1,38 @@
+{
+  "accounts": [
+    {
+      "name": "cursor",
+      "type": "cursor",
+      "_comment": "Admin API: api_key from team settings. 'email' for personal spend. 'included_usage/included_limit' are optional static values (not from API).",
+      "api_key": "key_YOUR_CURSOR_ADMIN_API_KEY",
+      "email": "you@company.com",
+      "ondemand_limit": 2000
+    },
+    {
+      "name": "cursor (session)",
+      "type": "cursor",
+      "_comment": "Session cookie approach: set session_token to WorkosCursorSessionToken value from browser DevTools.",
+      "session_token": "YOUR_SESSION_TOKEN_HERE",
+      "url": "https://www.cursor.com/api/usage",
+      "ondemand_limit": 2000
+    },
+    {
+      "name": "openrouter (Team 1)",
+      "type": "openrouter",
+      "api_key": "sk-or-v1-YOUR_OPENROUTER_KEY"
+    },
+    {
+      "name": "openrouter (Team 2)",
+      "type": "openrouter",
+      "api_key": "sk-or-v1-YOUR_SECOND_KEY"
+    },
+    {
+      "name": "openai",
+      "type": "openai",
+      "_comment": "Requires Admin key from platform.openai.com/settings/organization/admin-keys. 'budget' is optional (dashboard limit, not from API). 'billing_day' defaults to 1.",
+      "admin_key": "sk-admin-YOUR_OPENAI_ADMIN_KEY",
+      "budget": 120,
+      "billing_day": 1
+    }
+  ]
+}

@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""tokenbird - Token usage monitor for Waybar.
+
+Fetches usage/credit data from token-consuming services and outputs
+Waybar-compatible JSON with a Pango-formatted tooltip.
+
+Providers:
+  openrouter  - Uses /api/v1/credits (management key) or /api/v1/key (regular)
+  cursor      - Uses Admin API (/teams/spend, Enterprise) or session cookie
+  openai      - Uses Costs API (/v1/organization/costs, requires Admin key)
+
+Config: ~/.config/tokenbird/config.json
+Cache:  ~/.cache/tokenbird/data.json (5 min TTL)
+"""
+
+import base64
+import calendar
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONFIG = os.path.expanduser("~/.config/tokenbird/config.json")
+CACHE = os.path.expanduser("~/.cache/tokenbird/data.json")
+CACHE_TTL = 300
+
+
+def _http(url, headers=None, method="GET", body=None):
+    ctx = ssl.create_default_context()
+    raw = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=raw, headers=headers or {}, method=method)
+    with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
+        return json.loads(r.read())
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter
+# ---------------------------------------------------------------------------
+
+def fetch_openrouter(acc):
+    h = {"Authorization": f"Bearer {acc['api_key']}"}
+
+    # Management key -> /credits
+    try:
+        d = _http("https://openrouter.ai/api/v1/credits", h)
+        balance = d["data"]["total_credits"] - d["data"]["total_usage"]
+        return _result(acc, "OpenRouter", [f"Credit: ${balance:.2f}"], warn=balance < 5)
+    except urllib.error.HTTPError as e:
+        if e.code != 403:
+            raise
+
+    # Regular key -> /key
+    d = _http("https://openrouter.ai/api/v1/key", h)
+    info = d.get("data", {})
+    remaining = info.get("limit_remaining")
+    if remaining is not None:
+        return _result(acc, "OpenRouter", [f"Credit: ${remaining:.2f}"], warn=remaining < 5)
+    limit, usage = info.get("limit"), info.get("usage", 0)
+    if limit is not None:
+        bal = limit - usage
+        return _result(acc, "OpenRouter", [f"Credit: ${bal:.2f}"], warn=bal < 5)
+    return _result(acc, "OpenRouter", [f"Used: ${usage:.2f}"])
+
+
+# ---------------------------------------------------------------------------
+# Cursor
+# ---------------------------------------------------------------------------
+
+def fetch_cursor(acc):
+    if "api_key" in acc:
+        return _cursor_admin(acc)
+    if "session_token" in acc:
+        return _cursor_session(acc)
+    return _result(acc, "Cursor", ["No api_key or session_token"], error=True)
+
+
+def _cursor_admin(acc):
+    """Cursor Admin API – Enterprise teams only."""
+    auth_b64 = base64.b64encode(f"{acc['api_key']}:".encode()).decode()
+    h = {"Authorization": f"Basic {auth_b64}", "Content-Type": "application/json"}
+    d = _http("https://api.cursor.com/teams/spend", h, "POST", {})
+
+    members = d.get("teamMemberSpend", [])
+    total = sum(m.get("spendCents", 0) for m in members) / 100
+
+    lines = []
+
+    # "Included" is a personal plan budget the Admin API doesn't expose.
+    # Show it as a static value only when explicitly configured.
+    il = acc.get("included_usage")
+    il_limit = acc.get("included_limit")
+    if il is not None and il_limit is not None:
+        lines.append(f"Included: ${il} / ${il_limit}")
+
+    # Team on-demand total
+    ol = acc.get("ondemand_limit")
+    if ol:
+        lines.append(f"On-Demand (Team): ${total:,.2f} / ${ol:,}")
+    else:
+        lines.append(f"On-Demand (Team): ${total:,.2f}")
+
+    billing_day = acc.get("billing_day", 1)
+    days = _days_until_reset(billing_day)
+    lines.append(f"Resets in {days} day{'s' if days != 1 else ''}")
+
+    return _result(acc, "Cursor", lines, warn=ol and total > ol * 0.9)
+
+
+def _cursor_session(acc):
+    """Cursor session cookie approach – works for any plan.
+
+    Set 'session_token' to the value of your WorkosCursorSessionToken cookie.
+    Override 'url' in config if the default endpoint doesn't work.
+    """
+    token = acc["session_token"]
+    if token.startswith("WorkosCursorSessionToken="):
+        token = token.split("=", 1)[1]
+
+    url = acc.get("url", "https://www.cursor.com/api/usage")
+    h = {
+        "Cookie": f"WorkosCursorSessionToken={token}",
+        "User-Agent": "tokenbird/1.0",
+        "Accept": "application/json",
+    }
+
+    try:
+        d = _http(url, h)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        return _result(acc, "Cursor", [f"HTTP {e.code} – {body or 'check session_token'}"], error=True)
+
+    return _parse_cursor_response(acc, d)
+
+
+def _parse_cursor_response(acc, d):
+    """Best-effort parser for the Cursor usage response."""
+    if not isinstance(d, dict):
+        return _result(acc, "Cursor", [f"Unexpected: {str(d)[:80]}"], error=True)
+
+    lines = []
+
+    # --- included usage ---------------------------------------------------
+    for ukey, lkey in [
+        ("includedUsage", "includedLimit"),
+        ("included_usage", "included_limit"),
+        ("personalUsage", "personalLimit"),
+    ]:
+        val = d.get(ukey)
+        if val is not None:
+            lim = d.get(lkey) or acc.get("included_limit", 20)
+            lines.append(f"Included: ${val} / ${lim}")
+            break
+
+    # --- on-demand usage ---------------------------------------------------
+    for ukey, lkey in [
+        ("onDemandUsage", "onDemandLimit"),
+        ("ondemand_usage", "ondemand_limit"),
+        ("teamUsage", "teamLimit"),
+        ("hardLimitUsage", "hardLimit"),
+    ]:
+        val = d.get(ukey)
+        if val is not None:
+            lim = d.get(lkey) or acc.get("ondemand_limit")
+            if lim:
+                lines.append(f"On-Demand (Team): ${val} / ${lim}")
+            else:
+                lines.append(f"On-Demand (Team): ${val}")
+            break
+
+    # --- fallback: dump interesting scalars --------------------------------
+    if not lines:
+        for k, v in list(d.items())[:8]:
+            if isinstance(v, (int, float, str, bool)):
+                lines.append(f"{k}: {v}")
+
+    return _result(acc, "Cursor", lines or ["Empty response"])
+
+
+# ---------------------------------------------------------------------------
+# OpenAI
+# ---------------------------------------------------------------------------
+
+def fetch_openai(acc):
+    """OpenAI Costs API – requires an Admin API key.
+
+    Create one at: https://platform.openai.com/settings/organization/admin-keys
+    Config fields:
+      admin_key  - required, the Admin API key
+      budget     - optional, monthly budget limit (e.g. 120)
+      billing_day - optional, day of month the cycle resets (default: 1)
+    """
+    admin_key = acc["admin_key"]
+    h = {"Authorization": f"Bearer {admin_key}", "Content-Type": "application/json"}
+
+    now = time.time()
+    lt = time.localtime(now)
+    billing_day = acc.get("billing_day", 1)
+
+    if lt.tm_mday >= billing_day:
+        start_ts = int(time.mktime(time.strptime(
+            f"{lt.tm_year}-{lt.tm_mon:02d}-{billing_day:02d}", "%Y-%m-%d")))
+    else:
+        m = lt.tm_mon - 1 or 12
+        y = lt.tm_year if lt.tm_mon > 1 else lt.tm_year - 1
+        start_ts = int(time.mktime(time.strptime(
+            f"{y}-{m:02d}-{billing_day:02d}", "%Y-%m-%d")))
+
+    total_cost = 0.0
+    page_cursor = None
+    for _ in range(20):
+        params = {"start_time": start_ts, "bucket_width": "1d", "limit": 31}
+        if page_cursor:
+            params["page"] = page_cursor
+        qs = urllib.parse.urlencode(params)
+        d = _http(f"https://api.openai.com/v1/organization/costs?{qs}", h)
+        for bucket in d.get("data", []):
+            for result in bucket.get("results", []):
+                total_cost += float(result.get("amount", {}).get("value", 0))
+        page_cursor = d.get("next_page")
+        if not page_cursor:
+            break
+
+    budget = acc.get("budget")
+    if budget:
+        line = f"Budget: ${total_cost:.2f} / ${budget}"
+        warn = total_cost > budget * 0.9
+    else:
+        line = f"Spend: ${total_cost:.2f}"
+        warn = False
+
+    days = _days_until_reset(billing_day)
+    reset_line = f"Resets in {days} day{'s' if days != 1 else ''}"
+
+    return _result(acc, "OpenAI", [line, reset_line], warn=warn)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _days_until_reset(billing_day=1):
+    """Days remaining until the next billing_day."""
+    now = time.localtime()
+    y, m, d = now.tm_year, now.tm_mon, now.tm_mday
+    if d < billing_day:
+        reset_day = min(billing_day, calendar.monthrange(y, m)[1])
+        delta = reset_day - d
+    else:
+        nm = m + 1 if m < 12 else 1
+        ny = y if m < 12 else y + 1
+        reset_day = min(billing_day, calendar.monthrange(ny, nm)[1])
+        today = time.mktime(time.strptime(f"{y}-{m:02d}-{d:02d}", "%Y-%m-%d"))
+        reset = time.mktime(time.strptime(f"{ny}-{nm:02d}-{reset_day:02d}", "%Y-%m-%d"))
+        delta = int((reset - today) / 86400)
+    return delta
+
+
+PROVIDERS = {
+    "openrouter": fetch_openrouter,
+    "cursor": fetch_cursor,
+    "openai": fetch_openai,
+}
+
+
+def _result(acc, default_name, lines, warn=False, error=False):
+    return {
+        "name": acc.get("name", default_name),
+        "lines": lines,
+        "warn": bool(warn),
+        "error": bool(error),
+    }
+
+
+def _load_cache():
+    try:
+        with open(CACHE) as f:
+            c = json.load(f)
+        if time.time() - c.get("ts", 0) < CACHE_TTL:
+            return c["output"]
+    except Exception:
+        pass
+    return None
+
+
+def _save_cache(output):
+    try:
+        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+        with open(CACHE, "w") as f:
+            json.dump({"ts": time.time(), "output": output}, f)
+    except Exception:
+        pass
+
+
+def run(force=False):
+    if not os.path.exists(CONFIG):
+        return {
+            "text": "󰊤 ?",
+            "tooltip": "tokenbird: config not found\nCreate ~/.config/tokenbird/config.json",
+            "class": "error",
+        }
+
+    if not force:
+        cached = _load_cache()
+        if cached:
+            return cached
+
+    with open(CONFIG) as f:
+        cfg = json.load(f)
+
+    results, errors = [], []
+    for acc in cfg.get("accounts", []):
+        provider = PROVIDERS.get(acc.get("type"))
+        if not provider:
+            errors.append(f"Unknown type: {acc.get('type')}")
+            continue
+        try:
+            results.append(provider(acc))
+        except Exception as e:
+            errors.append(f"{acc.get('name', acc.get('type'))}: {e}")
+
+    tip, has_warn = [], False
+    for r in results:
+        tip.append(f"<b>{r['name']}</b>")
+        for ln in r["lines"]:
+            tip.append(f"  {ln}")
+        if r["warn"] or r["error"]:
+            has_warn = True
+    if errors:
+        tip += ["", "<b>Errors</b>"]
+        tip += [f"  {e}" for e in errors]
+        has_warn = True
+
+    output = {
+        "text": "󰊤",
+        "tooltip": "\n".join(tip),
+        "class": "warning" if has_warn else "normal",
+    }
+    _save_cache(output)
+    return output
+
+
+if __name__ == "__main__":
+    force = "--force" in sys.argv
+    print(json.dumps(run(force)))
