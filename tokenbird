@@ -354,13 +354,21 @@ def run(force=False):
         tip += [f"  {e}" for e in errors]
         has_warn = True
 
-    briefs = [r["brief"] for r in results if r.get("brief")]
+    briefs = []
+    for r in results:
+        b = r.get("brief")
+        if not b:
+            continue
+        if r["warn"] or r["error"]:
+            briefs.append(f'<span color="#bf616a">{b}</span>')
+        else:
+            briefs.append(b)
     bar_text = "󰊤 " + " · ".join(briefs) if briefs else "󰊤"
 
     output = {
         "text": bar_text,
         "tooltip": "\n".join(tip),
-        "class": "warning" if has_warn else "normal",
+        "class": "normal",
     }
     _save_cache(output)
     return output
