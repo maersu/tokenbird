@@ -18,6 +18,7 @@ import calendar
 import html
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -28,6 +29,14 @@ import urllib.request
 CONFIG = os.path.expanduser("~/.config/tokenbird/config.json")
 CACHE = os.path.expanduser("~/.cache/tokenbird/data.json")
 CACHE_TTL = 300
+NUMBER_RE = re.compile(r"(?<![\w.])\$?-?\d[\d,]*(?:\.\d+)?%?(?![\w.])")
+NUMBER_COLORS = [
+    "#a3be8c",
+    "#88c0d0",
+    "#ebcb8b",
+    "#b48ead",
+    "#d08770",
+]
 
 
 def _http(url, headers=None, method="GET", body=None):
@@ -296,6 +305,34 @@ def _result(acc, default_name, lines, warn=False, error=False, brief=None):
     }
 
 
+def _span(text, color, weight=None):
+    attrs = [f'color="{color}"']
+    if weight:
+        attrs.append(f'weight="{weight}"')
+    return f"<span {' '.join(attrs)}>{html.escape(str(text))}</span>"
+
+
+def _color_numbers(text):
+    parts, last = [], 0
+    color_idx = 0
+    for match in NUMBER_RE.finditer(str(text)):
+        parts.append(html.escape(str(text)[last:match.start()]))
+        parts.append(_span(match.group(0), NUMBER_COLORS[color_idx % len(NUMBER_COLORS)], "bold"))
+        color_idx += 1
+        last = match.end()
+    parts.append(html.escape(str(text)[last:]))
+    return "".join(parts)
+
+
+def _format_tooltip_line(line):
+    text = str(line)
+    if ": " not in text:
+        return f"  {_color_numbers(text)}"
+
+    label, value = text.split(": ", 1)
+    return f"  {_span(label + ':', '#81a1c1')} {_color_numbers(value)}"
+
+
 def _load_cache():
     try:
         with open(CACHE) as f:
@@ -345,9 +382,11 @@ def run(force=False):
 
     tip, has_warn = [], False
     for r in results:
-        tip.append(f"<b>{html.escape(str(r['name']))}</b>")
+        if tip:
+            tip.append("")
+        tip.append(_span(r["name"], "#eceff4", "bold"))
         for ln in r["lines"]:
-            tip.append(f"  {html.escape(str(ln))}")
+            tip.append(_format_tooltip_line(ln))
         if r["warn"] or r["error"]:
             has_warn = True
     if errors:
@@ -363,9 +402,9 @@ def run(force=False):
         if not b:
             continue
         if r["warn"] or r["error"]:
-            briefs.append(f'<span color="#bf616a">{b}</span>')
+            briefs.append(_span(b, "#bf616a", "bold"))
         else:
-            briefs.append(b)
+            briefs.append(html.escape(str(b)))
     bar_text = "󰊤 " + " · ".join(briefs) if briefs else "󰊤"
 
     output = {
