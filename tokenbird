@@ -15,6 +15,7 @@ Cache:  ~/.cache/tokenbird/data.json (5 min TTL)
 
 import base64
 import calendar
+import html
 import json
 import os
 import ssl
@@ -344,14 +345,16 @@ def run(force=False):
 
     tip, has_warn = [], False
     for r in results:
-        tip.append(f"<b>{r['name']}</b>")
+        tip.append(f"<b>{html.escape(str(r['name']))}</b>")
         for ln in r["lines"]:
-            tip.append(f"  {ln}")
+            tip.append(f"  {html.escape(str(ln))}")
         if r["warn"] or r["error"]:
             has_warn = True
     if errors:
-        tip += ["", "<b>Errors</b>"]
-        tip += [f"  {e}" for e in errors]
+        if tip:
+            tip.append("")
+        tip.append("<b>Errors</b>")
+        tip += [f"  {html.escape(str(e))}" for e in errors]
         has_warn = True
 
     briefs = []
