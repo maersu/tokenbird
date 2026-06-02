@@ -77,14 +77,13 @@ Config lives at `~/.config/tokenbird/config.json`. Each entry in the `accounts` 
   "name": "cursor",
   "type": "cursor",
   "api_key": "key_...",
-  "email": "you@company.com",
-  "ondemand_limit": 2000
+  "email": "you@company.com"
 }
 ```
 
 - **`api_key`** — Create at cursor.com/dashboard → Settings → Advanced → Admin API Keys.
 - **`email`** — Optional. Shows your individual on-demand spend.
-- **`ondemand_limit`** — Optional. The team's on-demand spending cap.
+- Cursor on-demand usage is shown as dollars spent. If the session endpoint returns a hard limit, tokenbird warns once spend reaches it.
 - **`included_usage`** / **`included_limit`** — Optional static values. The Admin API doesn't expose included usage, so set these manually if you want them displayed.
 
 **Session cookie** (any plan, no API key needed):
@@ -94,8 +93,7 @@ Config lives at `~/.config/tokenbird/config.json`. Each entry in the `accounts` 
   "name": "cursor",
   "type": "cursor",
   "session_token": "eyJ...",
-  "url": "https://www.cursor.com/api/usage",
-  "ondemand_limit": 2000
+  "url": "https://www.cursor.com/api/usage"
 }
 ```
 

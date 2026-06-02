@@ -110,23 +110,15 @@ def _cursor_admin(acc):
         lines.append(f"Included: ${il} / ${il_limit}")
 
     # Team on-demand total
-    ol = acc.get("ondemand_limit")
-    if ol:
-        lines.append(f"On-Demand (Team): ${total:,.2f} / ${ol:,}")
-    else:
-        lines.append(f"On-Demand (Team): ${total:,.2f}")
+    lines.append(f"On-Demand (Team): {_format_money(total)}")
 
     billing_day = acc.get("billing_day", 1)
     days = _days_until_reset(billing_day)
     lines.append(f"Resets in {days} day{'s' if days != 1 else ''}")
 
-    if ol:
-        pct = int(total / ol * 100)
-        brief = f"{pct}%"
-    else:
-        brief = f"${total:,.0f}"
+    brief = _format_money(total, decimals=0)
 
-    return _result(acc, "Cursor", lines, warn=ol and total > ol * 0.9, brief=brief)
+    return _result(acc, "Cursor", lines, brief=brief)
 
 
 def _cursor_session(acc):
@@ -165,6 +157,8 @@ def _parse_cursor_response(acc, d):
         return _result(acc, "Cursor", [f"Unexpected: {str(d)[:80]}"], error=True)
 
     lines = []
+    warn = False
+    brief = None
 
     # --- included usage ---------------------------------------------------
     for ukey, lkey in [
@@ -187,11 +181,19 @@ def _parse_cursor_response(acc, d):
     ]:
         val = d.get(ukey)
         if val is not None:
-            lim = d.get(lkey) or acc.get("ondemand_limit")
-            if lim:
-                lines.append(f"On-Demand (Team): ${val} / ${lim}")
+            lim = d.get(lkey)
+            val_num = _as_number(val)
+            lim_num = _as_number(lim)
+            spend = _format_money(val_num) if val_num is not None else f"${val}"
+            if lim is not None:
+                limit = _format_money(lim_num) if lim_num is not None else f"${lim}"
+                lines.append(f"On-Demand (Team): {spend} / {limit}")
             else:
-                lines.append(f"On-Demand (Team): ${val}")
+                lines.append(f"On-Demand (Team): {spend}")
+            warn = val_num is not None and lim_num is not None and val_num >= lim_num
+            if warn:
+                lines.append(f"Limit hit: {spend} spent")
+            brief = _format_money(val_num, decimals=0) if val_num is not None else spend
             break
 
     # --- fallback: dump interesting scalars --------------------------------
@@ -200,7 +202,7 @@ def _parse_cursor_response(acc, d):
             if isinstance(v, (int, float, str, bool)):
                 lines.append(f"{k}: {v}")
 
-    return _result(acc, "Cursor", lines or ["Empty response"])
+    return _result(acc, "Cursor", lines or ["Empty response"], warn=warn, brief=brief)
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +288,24 @@ def _days_until_reset(billing_day=1):
         reset = time.mktime(time.strptime(f"{ny}-{nm:02d}-{reset_day:02d}", "%Y-%m-%d"))
         delta = int((reset - today) / 86400)
     return delta
+
+
+def _as_number(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip().replace("$", "").replace(",", "")
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _format_money(value, decimals=2):
+    return f"${value:,.{decimals}f}"
 
 
 PROVIDERS = {

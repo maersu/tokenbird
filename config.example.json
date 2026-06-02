@@ -5,16 +5,14 @@
       "type": "cursor",
       "_comment": "Admin API: api_key from team settings. 'email' for personal spend. 'included_usage/included_limit' are optional static values (not from API).",
       "api_key": "key_YOUR_CURSOR_ADMIN_API_KEY",
-      "email": "you@company.com",
-      "ondemand_limit": 2000
+      "email": "you@company.com"
     },
     {
       "name": "cursor (session)",
       "type": "cursor",
       "_comment": "Session cookie approach: set session_token to WorkosCursorSessionToken value from browser DevTools.",
       "session_token": "YOUR_SESSION_TOKEN_HERE",
-      "url": "https://www.cursor.com/api/usage",
-      "ondemand_limit": 2000
+      "url": "https://www.cursor.com/api/usage"
     },
     {
       "name": "openrouter (Team 1)",
